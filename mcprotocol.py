@@ -1,101 +1,27 @@
-#!/usr/bin/python2.5
-
-# special thanks to the bravo project!
-
-from twisted.internet.protocol import Protocol, ClientFactory
-from twisted.internet import reactor, task
-
-import urllib2
-import sys
+from twisted.internet.protocol import Protocol
+from twisted.internet import task
 
 from packets import make_packet, parse_packets
-from packet_names import *
-
-from bravo.entity import Entity, Player
 from bravo.alpha import Location
+from mcpackets import *
+import urllib2
 
-server = "127.0.0.1"
-port   = 25565
 
-# wrap up functions to add themselves to the packet handler
-def handler(func, packet_type):
-    return func
 
-class World:
-    def __init__(self):
-        self.entities = {}
 
-    def add_entity(self, eid):
-        e = Entity()
-        self.entities[eid] = e
-        return e
+# make the handlers a little more obvious by using decorators
+# functions warapped will automatically be added the the handlers
+# dictionary of the protocol.
+def packet_handler(packet_type):
+    def wrap_it(func):
+        print func.__name__, packet_type
+        def wrapped(self, *args, **kwargs):
+            func(*args, **kwargs)
+        return wrapped
+	return wrap_it
 
-    def update_entity(self, eid, x, y, z, relative=False):
-        pass
 
-class MinecraftBot(Player):
-    def __init__(self, eid=0, username="", conn=None, *args, **kwargs):
-        super(MinecraftBot, self).__init__(eid, username, *args, **kwargs)
-        self.conn = conn
-        self.wire_out = self.conn.transport.write
-
-        self.hp = 20
-        self.world = None
-
-        self.need_to_respawn = False
-        self.tried_animation = False
-        
-        self.stance_mod = .1
-
-    def nearest_player(self):
-        pass
-
-    def update_location_from_packet(self, packet):
-        self.location.load_from_packet(packet)
-        print self.location
-
-    def spin_head(self):
-        self.location.yaw += 1
-        self.send_orientation_update()
-
-    def move_random(self):
-        self.location.x = self.location.x + 
-        #self.stance_mod += .0005
-        #self.location.stance = self.location.y - self.stance_mod
-        self.send_location_update()
-
-    def set_health(self, hp):
-        self.hp = hp
-        if self.hp == 0:
-            self.need_to_respawn = True
-
-    def send_orientation_update(self):
-        p, l, f = self.location.build_containers()
-        self.wire_out(make_packet("orientation", look=l, flying=f))
-        
-    def send_position_update(self):
-        p, l, f = self.location.build_containers()
-        self.wire_out(make_packet("position", position=p, flying=f))
-        
-    def tick(self):
-        if self.need_to_respawn == True:
-            self.conn.transport.write(make_packet("respawn"))
-            self.need_to_respawn = False
-
-        if not self.tried_animation:
-            #p= make_packet("animate", eid=self.eid, animation="uncrouch")
-            #self.conn.transport.write(p)
-            self.tried_animation = False
-
-        #p = self.move_random()
-        self.spin_head()
-
-def handler(func):
-	def wrap():
-		func()
-	return wrap
-	
-class MinecraftProtocol(Protocol):
+class MinecraftClientProtocol(Protocol):
     login_url = "http://www.minecraft.net/game/getversion.jsp"
     vfy_url  = "http://www.minecraft.net/game/checkserver.jsp"
     join_url = "http://www.minecraft.net/game/joinserver.jsp"
@@ -107,19 +33,18 @@ class MinecraftProtocol(Protocol):
     def do_nothing(self, *arg, **kwarg):
         pass
 
-    def __init__(self, user, passwd, online=True):
+    def __init__(self, bot, online=True):
         self.buffer = ""
 
-        self.bot = MinecraftBot(username=user, conn=self)
-        self.world = World()
+        self.bot = bot
+        bot.conn = self
 
         online = False
-
-        self.passwd = passwd
 
         # after client is ready, sends this back to the server
         self.confirmed_spawn = False
 
+        # this is be fixed someday...
         self.handlers = {
             KEEP_ALIVE:                self.OnKeepAlive,
             HANDSHAKE:                 self.OnHandshake,
@@ -168,11 +93,11 @@ class MinecraftProtocol(Protocol):
         }
 
         if online:
-            self.user = self.main_login(user, passwd)
+            self.username = self.main_login(bot.username, bot.password)
         else:
-            self.user = user
+            self.username = bot.username
 
-        if self.user == None:
+        if self.username == None:
             reactor.stop()
 
 
@@ -191,17 +116,18 @@ class MinecraftProtocol(Protocol):
 
     # this is the login for the server
     def server_login(self):
-        p = make_packet("login", protocol=8, username=self.user, password=self.passwd, seed=0, dimension=0)
+        p = make_packet("login", protocol=8, username=self.username, \
+            password=self.bot.password, seed=0, dimension=0)
         self.transport.write(p)
 
     def check_auth(self, hash):
-        o = "?user=%s&sessionId=%s&serverID=%s" % (self.user, self.sid, hash)
+        o = "?user=%s&sessionId=%s&serverID=%s" % (self.username, self.sid, hash)
         c = urllib2.urlopen(self.join_url + o).read()
         return c.lower() == "ok"
 
     # serverID aka "server hash"
     def verify_name(self, serverID):
-        o = "?user=%s&serverID=%s" % (self.user, serverID)
+        o = "?user=%s&serverID=%s" % (self.username, serverID)
         c = urllib2.urlopen(self.vfy_url + o).read()
         return c.lower() == "yes"
 
@@ -216,10 +142,10 @@ class MinecraftProtocol(Protocol):
                 print "cannot process packed %d" % header
                 print payload
 
-	@handler
     def OnAnimation(self, packet):
         print packet
 
+    #@packet_handler(UPDATE_HEALTH)
     def OnUpdateHealth(self, packet):
         self.bot.set_health(packet.hp)
 
@@ -275,11 +201,11 @@ class MinecraftProtocol(Protocol):
         self.bot_tick.start(self.bot_tick_interval)
 
     def OnEntity(self, packet):
-        self.world.add_entity(packet.eid)
+        self.bot.world.add_entity(packet.eid)
 
     def OnEntityRelativeMove(self, packet):
         eid, x, y, z = packet.eid, packet.x, packet.y, packet.z
-        self.world.update_entity(eid, x, y, z)
+        self.bot.world.update_entity(eid, x, y, z)
 
     def OnEntityLook(self, packet):
         pass
@@ -289,7 +215,7 @@ class MinecraftProtocol(Protocol):
 
     def OnEntityTeleport(self, packet):
         eid, x, y, z = packet.eid, packet.x, packet.y, packet.z
-        self.world.update_entity(eid, x, y, z)
+        self.bot.world.update_entity(eid, x, y, z)
 
     def OnBlockChange(self, packet):
         pass
@@ -299,7 +225,7 @@ class MinecraftProtocol(Protocol):
 
     def connectionMade(self):
         print "Handshaking..."
-        self.transport.write(make_packet("handshake", username=self.user))
+        self.transport.write(make_packet("handshake", username=self.username))
 
     def connectionLost(self, reason):
         print "Lost connection:", reason
@@ -308,34 +234,3 @@ class MinecraftProtocol(Protocol):
             self.bot_tick.cancel()
         except:
             pass
-
-class MineBotClientFactory(ClientFactory):
-    def __init__(self, user, passwd):
-        self.user = user
-        self.passwd = passwd
-
-    def buildProtocol(self, addr):
-        p = MinecraftProtocol(self.user, self.passwd)
-        return p
-
-    def clientConnectionLost(self, conn, reason):
-        print "Lost connection:", reason
-        reactor.stop()
-
-    def clientConnectionFailed(self, conn, reason): 
-        print "Connection failed:", reason
-        reactor.stop()
-
-if __name__ == "__main__":
-    #sys.exit()
-
-    user = "b2"
-    passwd = "password"
-
-    # hand control over to twisted
-    reactor.connectTCP(server, port, MineBotClientFactory(user, passwd))
-
-    reactor.run()
-
-
-
