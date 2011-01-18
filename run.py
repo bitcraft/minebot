@@ -25,11 +25,12 @@ password = "password"
 
 
 class MineBotClientFactory(ClientFactory):
-    def __init__(self, bot):
+    def __init__(self, bot, world):
         self.bot = bot
+        self.world = world
         
     def buildProtocol(self, addr):
-        p = MinecraftClientProtocol(self.bot)
+        p = MinecraftClientProtocol(self.bot, self.world)
         return p
 
     def clientConnectionLost(self, conn, reason):
@@ -46,9 +47,20 @@ class Server:
         self.address = address    
 
 if __name__ == "__main__":
+    #import hotshot
+
     bot = MinecraftBot(username, password)
 
-    # hand control over to twisted
-    reactor.connectTCP(server, port, MineBotClientFactory(bot))
+    world = World("world")
+    world.add_entity(bot)
+
+    reactor.connectTCP(server, port, MineBotClientFactory(bot, world))
+
+    #profile = hotshot.Profile("main")
+    #try:
+    #    profile.runcall(reactor.run)
+    #except:
+    #    pass
+    #profile.close()
 
     reactor.run()
