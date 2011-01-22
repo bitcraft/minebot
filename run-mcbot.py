@@ -8,9 +8,9 @@
 from twisted.internet.protocol import ClientFactory
 from twisted.internet import reactor
 
-from mcworld import World
-from mcbot import MinecraftBot
-from mcprotocol import MinecraftClientProtocol
+from mcbot.mcworld import World
+from mcbot.mcbot import MinecraftBot
+from mcbot.mcprotocol import MinecraftClientProtocol
 
 
 
@@ -47,7 +47,7 @@ class Server:
         self.address = address    
 
 if __name__ == "__main__":
-    #import hotshot
+    import hotshot
 
     bot = MinecraftBot(username, password)
 
@@ -56,11 +56,11 @@ if __name__ == "__main__":
 
     reactor.connectTCP(server, port, MineBotClientFactory(bot, world))
 
-    #profile = hotshot.Profile("main")
-    #try:
-    #    profile.runcall(reactor.run)
-    #except:
-    #    pass
-    #profile.close()
+    profile = hotshot.Profile("main")
+    try:
+        profile.runcall(reactor.run)
+    except:
+        pass
+    profile.close()
 
-    reactor.run()
+    #reactor.run()

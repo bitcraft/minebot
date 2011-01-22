@@ -42,9 +42,9 @@ class MinecraftClientProtocol(Protocol):
     vfy_url   = "http://www.minecraft.net/game/checkserver.jsp"
     join_url  = "http://www.minecraft.net/game/joinserver.jsp"
 
-    keep_alive_interval = 30    # seconds between each keep-alive packet
-    bot_tick_interval = 0.125
-    flying_interval = 3
+    keep_alive_interval = 60    
+    bot_tick_interval = 500.000 / 1000.000
+    flying_interval = 200.000 / 1000.000
 
 
     def __init__(self, bot, world, online=True):
@@ -113,7 +113,7 @@ class MinecraftClientProtocol(Protocol):
         return c.lower() == "yes"
 
     def send_flying(self):
-        self.transport.write(make_packet("flying", flying=False))
+        self.transport.write(make_packet("flying", flying=self.bot.location.midair))
 
     def send_keep_alive(self):
         self.transport.write(make_packet("ping"))
@@ -130,39 +130,39 @@ class MinecraftClientProtocol(Protocol):
 
 #   C H U N K   R E L A T E D   ============================
 
+# id really like some day to have the world take care
+# of the chunk stuff.
+
     @wrap_handler("prechunk")
     def OnPreChunk(self, packet):
         pass
 
     @wrap_handler("chunk")
     def OnMapChunk(self, packet):
-        cx = (packet.x / 16)
-        cz = (packet.z / 16)
-
-        chunk = Chunk(cx, cz)
-
-        try:
+        def add_chunk(chunk, packet):
             chunk.load_from_packet(packet)
-        except ValueError:
-            print "ValueError!  Cannot load from packet.  (seems to be a bug)" 
-            raise
-        else:
-            self.bot.world.add_chunk(cx, cz, chunk)
+            self.bot.world.add_chunk(chunk)
+
+        cx, bx = divmod(packet.x, 16)
+        cz, bz = divmod(packet.z, 16)
+
+        d = self.world.request_chunk(cx, cz)
+        d.addCallback(add_chunk, packet)
 
     @wrap_handler("block")
     def OnBlockChange(self, packet):
-        print int(self.bot.location.x)
-        print int(self.bot.location.z)
-        print int(self.bot.location.y)
-        print "BLOCK CHANGE"
-        print packet
-
-        if not self.bot.is_walking():
-            self.bot.move_to(packet.x, packet.z)
+        self.world.change_block(packet.x, packet.y, packet.z, \
+            packet.type, packet.meta)
 
     @wrap_handler("batch")
     def OnMultiBlockChange(self, packet):
-        print "MULTI BLOCK CHANGE"
+        for i in xrange(packet.length):
+            bx = packet.coords[i] >> 12
+            bz = packet.coords[i] >> 8 & 15
+            y = packet.coords[i] & 255
+
+            self.world.change_block(bx, y, bz, packet.types[i], \
+                packet.metadata[i])
 
     @wrap_handler("digging")
     def OnPlayerDigging(self, packet):

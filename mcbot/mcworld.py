@@ -2,7 +2,7 @@ from bravo.entity import Entity, Player
 from bravo.world import World as bravo_world
 from bravo.chunk import Chunk
 
-from twisted.internet.defer import Deferred
+from twisted.internet.defer import Deferred, succeed
 
 
 
@@ -21,6 +21,25 @@ class World(bravo_world):
         Override since we don't [really] need [/want] to do this on the client side.
         """
         pass
+
+    def save_chunk(self, chunk):
+        """
+        For now, its best to just keep it in memory.
+
+        Saving chunks is too impractical/slow in a bot environment (json).
+        """
+        pass
+
+    def change_block(self, x, y, z, block, meta):
+        def set_block(chunk, x, y, z, block, meta):
+            chunk.set_block((x, y, z), block)
+            chunk.metadata[x, z, y] = meta
+
+        cx, bx = divmod(x, 16)
+        cz, bz = divmod(z, 16)
+
+        d = self.request_chunk(cx, cz)
+        d.addCallback(set_block, bx, y, bz, block, meta)
 
     def request_chunk(self, x, z):
         """
@@ -42,12 +61,20 @@ class World(bravo_world):
             # chunk hasn't been recieved from the server yet
             chunk = Chunk(x, z)
 
-            d = Deferred()
-            forked = Deferred()
-            forked.addCallback(lambda none: chunk)
-            d.chainDeferred(forked)
-            self._pending_chunks[x, z] = d
-            return forked    
+            # just for now, lets just return a new chunk.
+            # in the future, may have have it wait until it comes
+            # from the server, idk
+
+            self.dirty_chunk_cache[x, z] = chunk
+
+            return succeed(chunk)            
+
+            #d = Deferred()
+            #forked = Deferred()
+            #forked.addCallback(lambda none: chunk)
+            #d.chainDeferred(forked)
+            #self._pending_chunks[x, z] = d
+            #return forked    
 
     def load_chunk(self, x, z):
         """
@@ -75,16 +102,23 @@ class World(bravo_world):
         print "attempting to load a chunk that is not available"
         raise Exception
 
-    def add_chunk(self, x, z, chunk):
+    def add_chunk(self, chunk):
         """
         Used by the protocol to add chunks coming in over the wire.
         """
+
+        x, z = chunk.x, chunk.z
 
         self.dirty_chunk_cache[x, z] = chunk
 
         if (x, z) in self._pending_chunks:
             self._pending_chunks[x, z].callback(chunk)
             del self._pending_chunks[x, z]
+        
+        # if it was already in the cache, then its going to get dirty'd
+        # with any update.
+        if (x, z) in self.chunk_cache:
+            del self.chunk_cache[x, z]
 
     def add_entity(self, e):
         """

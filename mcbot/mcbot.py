@@ -8,6 +8,7 @@ from mcworld import World
 import random
 
 
+
 class MinecraftBot(Player):
     def __init__(self, username="", password="", eid=0, *args, **kwargs):
         super(MinecraftBot, self).__init__(eid, username, *args, **kwargs)
@@ -17,6 +18,9 @@ class MinecraftBot(Player):
         self.hp = 20
         self.world = None
 
+        # what chunk we are currently on
+        self.chunk = None
+
         self.is_ready = False
         self.need_to_respawn = False
         self.tried_animation = False
@@ -25,53 +29,53 @@ class MinecraftBot(Player):
 
         self.cmd_queue = []
 
-    # should be called by the protocol to signal the bot that it is ready
-    # to move around and do stuff.
     def OnReady(self):
+        """
+        Called by the protocol when the player/bot is ready to move around.
+        """
         print "READY"
-       
-        self.gravity()
- 
+        self.OnChangeChunk()
         self.is_ready = True
-
-        l = Location()
-        
-        l.x = self.location.x - 5
-        l.z = self.location.z - 5
-       
-        g = self.change_movement(l, None, 5)
-
-        self.cmd_queue.append(g)
 
     def OnChat(self, message):
         """
         Handle chat messages
-
         """
         print "in>", message
         self.wire_out(make_packet("chat", message="i hear something!")) 
 
-    def print_block(self, chunk, callbackArgs=None):
-        x, z, y = callbackArgs
+    def OnChangeChunk(self):
+        # do something if we move onto another chunk
+        def set_chunk(chunk):
+            self.chunk = chunk
 
-        print x, z, int(y)
-        print block_names[chunk.blocks[x, z, int(y) - 5]]
+        cx, bx, cz, bz = split_coords(self.location.x, self.location.z)
+        d = self.world.request_chunk(cx, cz)
+        d.addCallback(set_chunk)
 
     def gravity(self):
         """
         my small brain cant really figure out gravity, so, here is a stab at it
 
-        probably not fast, so to be used sparingly
+        Does not model physics.
         """
 
-        print "flying", self.location.midair
+        # our world/chunk may not be ready
+        if self.chunk == None:
+            return
 
-        if self.location.midair:
-            cx, bx, cz, bz = split_coords(self.location.x, self.location.z)
+        bx = divmod(self.location.x, 16)[1]
+        bz = divmod(self.location.z, 16)[1]
+        y = int(self.location.y)
 
-            d = self.world.request_chunk(cx, cz)
-            d.addCallback(self.print_block, \
-                callbackArgs=(bx, bz, self.location.y))
+        #print self.chunk.blocks[bx, bz, y]
+
+        if self.chunk.blocks[bx, bz, y] == 0:
+            self.location.midair = True
+            self.location.y -= .1
+            self.send_position_update()
+        else:
+            self.midair = False
 
     def look_at_nearest_entity(self):
         l = self.world.get_surrounding_entities(self, 10)
@@ -132,8 +136,9 @@ class MinecraftBot(Player):
         return self._health
 
     def hp_setter(self, hp):
+        print "hp is", hp
         self._hp = hp
-        if self._hp == 0:
+        if self._hp <= 0:
             self.need_to_respawn = True
     health = property(hp_getter, hp_setter)
 
@@ -141,9 +146,8 @@ class MinecraftBot(Player):
         try:
             if self.is_ready:
                 p = self.cmd_queue[0].next()
-                #self.wire_out(p)
+                self.wire_out(p)
         except StopIteration:
-            print "stop"
             self.cmd_queue.pop()
         except IndexError:
             pass
@@ -155,28 +159,29 @@ class MinecraftBot(Player):
             self.send_respawn()
             self.need_to_respawn = False
 
-        if not self.tried_animation:
-            #p= make_packet("animate", eid=self.eid, animation="uncrouch")
-            #self.wire_out(p)
-            self.tried_animation = False
-
         #if self.is_ready:
         #    if not self.is_walking():
         #        self.move_random()
 
-        # just spam packets to the bot.  looks funny, too.
-        # self.spin_head()
+        print "tick"
+        self.gravity()
+
+        #just spam packets to the bot.  looks funny, too.
+        #self.spin_head()
 
         # handle commands in the que.  yep. 
-        self.handle_queue()
+        #self.handle_queue()
     
-    # give a request to the bot to move somewhere or position itself
-    # return a generator that will return packets so that the movement
-    # is smooth.  the packets will be written to the wire at regular
-    # intervals.  
-    # NOTE: wouldn't it be real nice if we implimented position as a vector?
-    # Would look a lot better if plugging in some real math.  splines, anyone?
     def change_movement(self, location, position, t):
+        """
+        give a request to the bot to move somewhere or position itself
+        return a generator that will return packets so that the movement
+        is smooth.  the packets will be written to the wire at regular
+        intervals.  
+        NOTE: wouldn't it be real nice if we implimented position as a vector?
+        Would look a lot better if plugging in some real math.  splines, anyone?
+        """
+
         this_loc = Location()
 
         this_loc.x = self.location.x
@@ -211,15 +216,10 @@ class MinecraftBot(Player):
             self.location.x = this_loc.x
             self.location.z = this_loc.z
             
-            #p, l, f = this_loc.build_containers()
+            p, l, f = self.location.build_containers()
 
-            self.send_position_update()
+            yield make_packet("position", position=p, flying=f)
 
-            yield None
-
-            #yield make_packet("position", position=p, flying=f)
-
-    # protocol dependent.  abstraction, plz?
     # the following methods rely on the bravo impl. of the protocol    
 
     # laziness
@@ -235,10 +235,11 @@ class MinecraftBot(Player):
  
     def send_position_update(self):
         p, l, f = self.location.build_containers()
-        print p.x, p.z 
         self.wire_out(make_packet("position", position=p, flying=f))
         
     def update_location_from_packet(self, packet):
+        # the server will occasionally send packets the client
+        # correcting position.
         self.location.load_from_packet(packet)
 
         
