@@ -1,5 +1,5 @@
 from bravo.entity import Entity, Player
-from bravo.alpha import Location
+from bravo.location import Location
 from bravo.blocks import block_names
 from bravo.utilities import split_coords
 from bravo.packets import make_packet

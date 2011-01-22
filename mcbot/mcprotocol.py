@@ -3,7 +3,7 @@ from twisted.internet import task
 from twisted.internet import reactor
 
 from bravo.packets import packets_by_name, make_packet, parse_packets
-from bravo.alpha import Location
+from bravo.location import Location
 from bravo.chunk import Chunk
 import urllib2
 
@@ -96,8 +96,10 @@ class MinecraftClientProtocol(Protocol):
 
     # this is the login for the server
     def server_login(self):
+        # it might look funny abt "unused".  b/c MAD's packet use this name
+        # but a client uses this space for a password
         p = make_packet("login", protocol=8, username=self.username, \
-            password=self.bot.password, seed=0, dimension=0)
+            unused=self.bot.password, seed=0, dimension=0)
         self.transport.write(p)
 
     # ask the server what kind of authentication to use
