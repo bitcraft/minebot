@@ -1,13 +1,15 @@
 from twisted.internet.protocol import Protocol
 from twisted.internet import task
 from twisted.internet import reactor
+from twisted.python.failure import Failure
 
-from bravo.packets import packets_by_name, make_packet, parse_packets
+from bravo.packets import packets, packets_by_name, make_packet, parse_packets
 from bravo.location import Location
 from bravo.chunk import Chunk
-import urllib2
 
-import sys
+from construct import Container
+
+import sys, re, urllib2
 
 
 
@@ -43,9 +45,18 @@ class MinecraftClientProtocol(Protocol):
     join_url  = "http://www.minecraft.net/game/joinserver.jsp"
 
     keep_alive_interval = 60    
-    bot_tick_interval = 500.000 / 1000.000
+    bot_tick_interval = 1000.000 / 1000.000
+    #flying_interval = 500.000 / 1000.000
     flying_interval = 200.000 / 1000.000
 
+    # regex to strip names from chat messages
+    chat_regex = re.compile("<(.*?)>(.*)")
+
+    def dummy_handler(self, header, packet):
+        try:
+            print packets[header]
+        except KeyError:
+            print "unhandled", header
 
     def __init__(self, bot, world, online=True):
         self.buffer = ""
@@ -54,6 +65,9 @@ class MinecraftClientProtocol(Protocol):
         bot.conn = self
         
         self.world = world
+
+        # used for handling window actions
+        self.action_no = 1
 
         online = False
 
@@ -128,12 +142,17 @@ class MinecraftClientProtocol(Protocol):
             if header in packet_handlers:
                 packet_handlers[header](self, payload)
             else:
-                pass
+                self.dummy_handler(header, payload)
+
+    @wrap_handler("ping")
+    def OnPing(self, packet):
+        pass
+
+    @wrap_handler("time")
+    def OnTime(self, packet):
+        pass
 
 #   C H U N K   R E L A T E D   ============================
-
-# id really like some day to have the world take care
-# of the chunk stuff.
 
     @wrap_handler("prechunk")
     def OnPreChunk(self, packet):
@@ -141,22 +160,28 @@ class MinecraftClientProtocol(Protocol):
 
     @wrap_handler("chunk")
     def OnMapChunk(self, packet):
+        return
+
         def add_chunk(chunk, packet):
             chunk.load_from_packet(packet)
             self.bot.world.add_chunk(chunk)
+
+        def chunk_error(failure):
+            print "couldn't parse chunk packet"
 
         cx, bx = divmod(packet.x, 16)
         cz, bz = divmod(packet.z, 16)
 
         d = self.world.request_chunk(cx, cz)
         d.addCallback(add_chunk, packet)
+        d.addErrback(chunk_error)
 
-    @wrap_handler("block")
+    #@wrap_handler("block")
     def OnBlockChange(self, packet):
         self.world.change_block(packet.x, packet.y, packet.z, \
             packet.type, packet.meta)
 
-    @wrap_handler("batch")
+    #@wrap_handler("batch")
     def OnMultiBlockChange(self, packet):
         for i in xrange(packet.length):
             bx = packet.coords[i] >> 12
@@ -172,7 +197,7 @@ class MinecraftClientProtocol(Protocol):
 
     @wrap_handler("animate")
     def OnAnimation(self, packet):
-        print packet
+        pass
 
     @wrap_handler("health")
     def OnUpdateHealth(self, packet):
@@ -186,6 +211,7 @@ class MinecraftClientProtocol(Protocol):
     def OnPlayerLocationUpdate(self, packet):
         self.bot.update_location_from_packet(packet)
 
+        # part of the login/auth sequence
         if self.confirmed_spawn == False:
             location = Location()
             location.load_from_packet(packet)
@@ -193,6 +219,15 @@ class MinecraftClientProtocol(Protocol):
             self.transport.write(p)
             self.confirmed_spawn = True
             self.bot.OnReady()
+
+    #@wrap_handler("destroy")
+    def OnDestroy(self, packet):
+        print packet
+
+    @wrap_handler("create")
+    def OnCreate(self, packet):
+        #print "entity", packet
+        self.world.add_entity_by_id(packet.eid)
 
     @wrap_handler("entity-position", "entity-orientation", "entity-location")
     def OnEntityLocationUpdate(self, packet):
@@ -206,7 +241,25 @@ class MinecraftClientProtocol(Protocol):
 
     @wrap_handler("chat")
     def OnChat(self, packet):
-        pass
+        """
+        Parse chat messages.
+
+        The Notch server sends messages back that the client sends,
+        so we check and skip any messages that we sent.
+        Return who sent the message with the text.
+        I don't know anything about the color codes, so they are
+        not processed.
+        """
+
+        match = self.chat_regex.match(packet.message)
+        if match == None:
+            return
+
+        self.throw()
+
+        who, text = match.groups()
+        if who != self.username:
+            self.bot.OnChat(who, text)
 
     @wrap_handler("handshake")
     def OnHandshake(self, packet):
@@ -237,9 +290,66 @@ class MinecraftClientProtocol(Protocol):
         self.bot_tick = task.LoopingCall(self.bot.tick)
         self.bot_tick.start(self.bot_tick_interval)
 
-    @wrap_handler("create")
-    def OnEntity(self, packet):
-        self.world.add_entity_by_id(packet.eid)
+    @wrap_handler("window-open")
+    def OnWindowOpen(self, packet):
+        print packet
+
+    @wrap_handler("window-close")
+    def OnWindowClose(self, packet):
+        print packet
+
+    @wrap_handler("window-action")
+    def OnWindowAction(self, packet):
+        print packet
+
+    def get_action_no(self):
+        self.action_no += 1
+        return self.action_no
+
+    def throw(self):
+        """
+        throws item in hand
+        
+        not sure if this is the correct way to do this.
+        simulates a player opening the inventory, clicking an item
+        then closing the window with the item in the cursor
+        """
+
+        action_no = self.get_action_no()
+
+        slot_no, item = self.bot.inventory.get_filled_slot()
+        
+        clickit = make_packet("window-action", wid=0, slot=slot_no, button=0, \
+            token=action_no, primary=item[0], secondary=item[1] , count=item[2])
+        closeit = make_packet("window-close", wid=0)
+
+        print "throwing", slot_no
+
+        
+        self.transport.write(clickit)
+        self.transport.write(closeit)
+
+    # also used when bot picks up items
+    @wrap_handler("window-slot")
+    def OnWindowSlot(self, packet):
+        self.bot.inventory.update_from_packet(packet)
+        print "pickup", packet.slot
+        print self.bot.inventory.storage
+        print self.bot.inventory.holdables
+
+    @wrap_handler("window-progress")
+    def OnWindowProgress(self, packet):
+        print packet
+
+    @wrap_handler("window-token")
+    def OnWindowToken(self, packet):
+        print "action results"
+        print "number: %s, status: %s" % (packet.token, packet.acknowledged)
+
+    # sent by server to init the player's inventory
+    @wrap_handler("inventory")
+    def OnInventory(self, packet):
+        self.bot.inventory.load_from_packet(packet)
 
     @wrap_handler("error")
     def OnKick(self, packet):

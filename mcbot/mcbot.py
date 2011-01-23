@@ -10,6 +10,8 @@ import random
 
 
 class MinecraftBot(Player):
+
+
     def __init__(self, username="", password="", eid=0, *args, **kwargs):
         super(MinecraftBot, self).__init__(eid, username, *args, **kwargs)
         self.password = password
@@ -24,6 +26,7 @@ class MinecraftBot(Player):
         self.is_ready = False
         self.need_to_respawn = False
         self.tried_animation = False
+        self.last_sent_chat = ""
         
         self.stance_mod = .1
 
@@ -37,12 +40,16 @@ class MinecraftBot(Player):
         self.OnChangeChunk()
         self.is_ready = True
 
-    def OnChat(self, message):
+    def OnChat(self, who, text):
         """
         Handle chat messages
+
+        Don't know if the color control codes go here or not.
+        So, they are not checked for/stripped yet.
         """
-        print "in>", message
-        self.wire_out(make_packet("chat", message="i hear something!")) 
+
+        # be annoying
+        self.wire_out(make_packet("chat", message=text+"?"))
 
     def OnChangeChunk(self):
         # do something if we move onto another chunk
@@ -68,9 +75,8 @@ class MinecraftBot(Player):
         bz = divmod(self.location.z, 16)[1]
         y = int(self.location.y)
 
-        #print self.chunk.blocks[bx, bz, y]
-
         if self.chunk.blocks[bx, bz, y] == 0:
+            print "falling!"
             self.location.midair = True
             self.location.y -= .1
             self.send_position_update()
@@ -138,9 +144,9 @@ class MinecraftBot(Player):
     def hp_setter(self, hp):
         print "hp is", hp
         self._hp = hp
-        if self._hp <= 0:
+        if (hp > 20) or (hp <= 0):
             self.need_to_respawn = True
-    health = property(hp_getter, hp_setter)
+    hp = property(hp_getter, hp_setter)
 
     def handle_queue(self):
         try:
@@ -163,8 +169,7 @@ class MinecraftBot(Player):
         #    if not self.is_walking():
         #        self.move_random()
 
-        print "tick"
-        self.gravity()
+        #self.gravity()
 
         #just spam packets to the bot.  looks funny, too.
         #self.spin_head()
@@ -225,10 +230,12 @@ class MinecraftBot(Player):
     # laziness
     def wire_out(self, data):
         self.conn.transport.write(data)
+        print "out >>", str(data[:25])
 
     def send_respawn(self):
         self.wire_out(make_packet("respawn"))
-    
+        self.conn.confirmed_spawn = False    
+
     def send_orientation_update(self):
         p, l, f = self.location.build_containers()
         self.wire_out(make_packet("orientation", look=l, flying=f))
