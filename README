@@ -6,13 +6,18 @@ Do some damage and
 Watch me crash.
 
 Needs some changes to the vanilla bravo library to run.
-I'll post them after I figure out how to fork bravo correctly.
+Should work with the version under my account
 
 What works:
     Login with minecraft.net
     Login with server
     Movement
     Geometry
+    Gravity
+    Bot/Player Inventory
+    Chat
+    Health
+    Respawn
 
 What doesn't:
     Probably anything you would want it to do.
