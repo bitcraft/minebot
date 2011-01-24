@@ -47,7 +47,7 @@ class Server:
         self.address = address    
 
 if __name__ == "__main__":
-    import hotshot
+    import cProfile
 
     bot = MinecraftBot(username, password)
 
@@ -56,11 +56,13 @@ if __name__ == "__main__":
 
     reactor.connectTCP(server, port, MineBotClientFactory(bot, world))
 
-    profile = hotshot.Profile("main")
-    try:
-        profile.runcall(reactor.run)
-    except:
-        pass
-    profile.close()
+    cProfile.run('reactor.run()', "mcbot.prof")
+
+    #profile = hotshot.Profile("main")
+    #try:
+    #    profile.runcall(reactor.run)
+    #except:
+    #    pass
+    #profile.close()
 
     #reactor.run()

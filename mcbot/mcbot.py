@@ -1,17 +1,42 @@
 from bravo.entity import Entity, Player
 from bravo.location import Location
 from bravo.blocks import block_names
-from bravo.utilities import split_coords
 from bravo.packets import make_packet
 from mcworld import World
 
 import random
 
+from math import ceil
+
+"""
+notes
+
+ragnorok engine's maths would be helpful here.
+some actions wait for a response from the server --
+    it would be helpful to make all actions call a defered
+    we can use twisted defered framework to leverage scripts
+
+    actions that we would want to use in a scripting environment 
+    should have flags that control how they are scheduled
+    for example...we can start moving to a place, then swtich item in hand
+        * send command to move (marked as not blocking)
+        * send command to change item in hand
+    and so on.
+
+    this could be handled by twisted's defered, or by the GOAP scheduler
+
+bot needs a backend control.
+could just use cmd.py (again)
+"""
+
+
+def split_coords(z, x):
+    cx, bx = divmod(int(x), 16)
+    cz, bz = divmod(int(z), 16)
+    return cx, bx, cz, bz
 
 
 class MinecraftBot(Player):
-
-
     def __init__(self, username="", password="", eid=0, *args, **kwargs):
         super(MinecraftBot, self).__init__(eid, username, *args, **kwargs)
         self.password = password
@@ -36,11 +61,11 @@ class MinecraftBot(Player):
         """
         Called by the protocol when the player/bot is ready to move around.
         """
+
         print "READY"
-        self.OnChangeChunk()
         self.is_ready = True
 
-    def OnChat(self, who, text):
+    def OnChatIn(self, who, text):
         """
         Handle chat messages
 
@@ -49,39 +74,65 @@ class MinecraftBot(Player):
         """
 
         # be annoying
-        self.wire_out(make_packet("chat", message=text+"?"))
+        #self.send_chat(text + "?")
 
-    def OnChangeChunk(self):
-        # do something if we move onto another chunk
-        def set_chunk(chunk):
-            self.chunk = chunk
+    def OnChangeLocation(self):
+        """
+        Called when our location changes
+        """
 
         cx, bx, cz, bz = split_coords(self.location.x, self.location.z)
-        d = self.world.request_chunk(cx, cz)
-        d.addCallback(set_chunk)
+
+        if self.chunk == None:
+            d = self.world.request_chunk(cx, cz)
+            d.addCallback(self.set_chunk)
+
+        elif (cz != self.chunk.x) or (cz != self.chunk.z):
+            d = self.world.request_chunk(cx, cz)
+            d.addCallback(self.set_chunk)
+    
+    def set_chunk(self, chunk):
+        self.chunk = chunk
+
+    def set_location(self, location):
+        """
+        Call to set the location.
+
+        Please don't call the location directly, we have hooks on the bot to manage here.
+        """
+        
+        self.location = location
+        self.OnChangeLocation()
 
     def gravity(self):
         """
-        my small brain cant really figure out gravity, so, here is a stab at it
-
         Does not model physics.
+        Only falls through air (not water, sand, etc)
         """
 
         # our world/chunk may not be ready
         if self.chunk == None:
             return
 
-        bx = divmod(self.location.x, 16)[1]
-        bz = divmod(self.location.z, 16)[1]
-        y = int(self.location.y)
+        cx, bx = divmod(int(self.location.x), 16)
+        cz, bz = divmod(int(self.location.z), 16)
 
-        if self.chunk.blocks[bx, bz, y] == 0:
+        # somehow these are not really aligned properly
+        bx -= 1
+        bz -= 1
+   
+        # we need to look for the next block that we can fall onto 
+        by = int(self.location.y -0.1)
+
+        if self.chunk.blocks[bx, bz, by] == 0:
             print "falling!"
             self.location.midair = True
             self.location.y -= .1
             self.send_position_update()
         else:
             self.midair = False
+
+        return
 
     def look_at_nearest_entity(self):
         l = self.world.get_surrounding_entities(self, 10)
@@ -95,6 +146,7 @@ class MinecraftBot(Player):
         self.world.get_surrounding(self) 
 
     def spin_head(self):
+        # just a way to visually see a bot tick
         self.location.yaw += 1
         self.send_orientation_update()
 
@@ -144,6 +196,7 @@ class MinecraftBot(Player):
     def hp_setter(self, hp):
         print "hp is", hp
         self._hp = hp
+        # sometimes the hp gets set super high when player is killed
         if (hp > 20) or (hp <= 0):
             self.need_to_respawn = True
     hp = property(hp_getter, hp_setter)
@@ -165,13 +218,8 @@ class MinecraftBot(Player):
             self.send_respawn()
             self.need_to_respawn = False
 
-        #if self.is_ready:
-        #    if not self.is_walking():
-        #        self.move_random()
+        self.gravity()
 
-        #self.gravity()
-
-        #just spam packets to the bot.  looks funny, too.
         #self.spin_head()
 
         # handle commands in the que.  yep. 
@@ -230,7 +278,7 @@ class MinecraftBot(Player):
     # laziness
     def wire_out(self, data):
         self.conn.transport.write(data)
-        print "out >>", str(data[:25])
+        print "out >>", data.__repr__()
 
     def send_respawn(self):
         self.wire_out(make_packet("respawn"))
@@ -248,6 +296,4 @@ class MinecraftBot(Player):
         # the server will occasionally send packets the client
         # correcting position.
         self.location.load_from_packet(packet)
-
-        
 
