@@ -1,7 +1,7 @@
 from twisted.internet.protocol import Protocol
-from twisted.internet import task
-from twisted.internet import reactor
 from twisted.python.failure import Failure
+from twisted.internet.defer import Deferred, succeed
+from twisted.internet import task, reactor
 
 from bravo.packets import packets, packets_by_name, make_packet, parse_packets
 from bravo.location import Location
@@ -50,48 +50,184 @@ def wrap_handler(*types):
 class ExtrasMixin(object):
     """
     These are all the little things that you would want a bot/client to *do*,
-    but the mechanics are tied closely to the network protocol to be defined
+    but the mechanics are tied too closely to the network protocol to be defined
     in the bot/player class.
 
     These are expected to be called by the bot.  As the protocol changes, these
-    may also change, but the bot and related scripts wont have too.
+    may also change, but the bot and related scripts wont have too.
+
+    actions requiring a action number (transaction token) should follow
+    twisted protocol.
+
+    functions need extra information for the ai
+    ai can then handle more complex cases, such as moving items from one chest to another
+    or crafting items, etc.
     """
 
-    def throw(self):
+    open_window = None
+
+    def get_item(self, item, count=1):
         """
-        throws item in hand
-        
+        kinda wraps around stacks and what-not
+
+        returns a list of tuples of slots that can be used
+        for example, if you have 200 dirt in 3 stacks, and you
+        want to put 150 of it in a chest, then this will return
+        stacks that you can use to get the 150 needed.
+
+        if the quantity cannot be satisfied, then return None
+
+        a count of -1 will return all the that item
+        """
+
+        if count == -1:
+            return [ i for i in self.bot.inventory.flat if i[0] == item ] 
+            
+        ret = []
+        current = 0
+        for i in [ i for i in self.bot.inventory.flat if i[0] == item]:
+            if i[2] + current >= count:
+                ret.append((item[0], item[1], item[2] - i[2] + current))
+                return ret
+            else:
+                ret.append(item) 
+                current += item[2] 
+
+    """
+    req: item in inventory
+    eff: item not in inventory
+    """
+    def throw_item(self, item, count=1):
+        """
+        throw item in players inventory
+
+        count:
+            if = -1, throw ALL
+            there could be multiple stacks of an item
+            in that case, throw the count from the first stack, if not enough
+                find another stack to remove from
+            if unstackable item, but has count, then find enough to satisfy
+            the count.
+        """
+
+        for slot, item in self.get_item(item, count):
+            self.throw_slot(slot, count, item)
+
+    def throw_slot(self, slot_no, count=1, item=None):
+        """
+        throw an item in a slot
+
         not sure if this is the correct way to do this.
         simulates a player opening the inventory, clicking an item
         then closing the window with the item in the cursor
 
-        this action is stuck in the protocol since it may change as the protocol changes.
-
         seems to bug out once in a while
+        if slot is empty, there will be no error
         """
 
-        action_no = self.get_action_no()
-
-        # just forget about it if we cannot throw
-        try:
-            slot_no, item = self.bot.inventory.get_filled_slot()
-        except:
+        if item == None:
+            print "must incl item no"
             return
+
+        count = item[2]
+
+        action_no, d = self._get_next_action_no(sys.exit, None)
         
         clickit = make_packet("window-action", wid=0, slot=slot_no, button=0, \
-            token=action_no, primary=item[0], secondary=item[1] , count=1)
+            token=action_no, primary=item[0], secondary=item[1] , count=count)
+
+        # send the data over the wire
+        self.transport.write(clickit)
+
+        # closing the window actualy preforms the throw
         closeit = make_packet("window-close", wid=0)
 
-        self.transport.write(clickit)
         self.transport.write(closeit)
 
-    def hold_item(self, item):
-        # put an object into hand from personal inventory
-        pass
+        # close the fake window no matter what
+        #d.addBoth(self.transport.write, closeit)
 
-    def dig(self, times, rate):
+    # useful if chaining clicks together.
+    def window_click(self, **kwargs):
+        kwargs["action_no"], d = get_action_number()
+        self.transport.write(make_packet("window-action", kwargs)) 
+        return d
+
+    def swap_slots(self, name, from_slot, to_slot, item1=None, item2=None):
+        """
+        Swap the items in two slots
+
+        if the to_slot contains an item, then place it in the from_slot.
+        Simulates user interaction on the client (mouse clicks)
+
+        the minecraft protocol requires the client to know the slot and
+        item attributes when sending this packet.  the item1 & item2
+        parameters are there *in case* the calling function already knows
+        this information (not implimented)
+        """
+
+        if name == 0:
+            item1 = self.bot.inventory.get_slot(item1)
+            item2 = self.bot.inventory.get_slot(item2)
+
+        # simulate the first click
+        d1 = self.window_click(name=name, slot=from_slot, button=0, \
+            primary=item1[0], secondary=item1[1] , count=item1[2])
+
+        # simulate click on the slot to move to
+        d2 = self.window_click(name=name, slot=to_slot, button=0, \
+            primary=item2[0], secondary=item2[1] , count=item2[2])
+
+        d1.chainDeferred(d2)
+
+        if have_another:
+            # simulate click on the orginal slot
+            d3 = self.window_click(name=name, slot=from_slot, button=0, \
+                primary=item1[0], secondary=item1[1] , count=item1[2])
+
+            d1.chainDeferred(d3)
+
+    """
+    req: item in inventory
+    eff: wield item
+    """
+    def hold_item(self, item):
+        """
+        Put an item in the bots hand.
+
+        If the item is not in the lower panel (holdables), then it will move
+        the item to an available slot in holdables.  If there are no open
+        slots in holdables, some item will be swapped out and the new item
+        placed in the hand, then equipted.
+        """
+
+        try:
+            l, item_slot = self.bot.inventory.get_slot(item)
+        except:
+            print "item not found in enventory"
+            return
+
+        # item is not in holdables.  move it.
+        if l != self.bot.inventory.holdables:
+            try:
+                holding_slot = self.bot.inventory.holdables.index(None)
+            except ValueError:
+                # there is no open slot in holdables
+                # just use slot 40
+                holding_slot = 40
+
+            self.swap_slots(0, item_slot, holding_slot)
+
+        # finally, change the item in the hand
+        make_packet("holding_change", slot=slot_no)
+
+    """
+    req: wield item can dig block
+    eff: block destroyed
+    """
+    def dig(self, bx, by, bz, times, rate):
         # use the tool in hand (or fist if nothing)
-        pass
+        make_packet("digging", status=dig_status, x=bx, y=by, z=bz, face=block_face)
 
     def set_head_tracking(self, entity):
         # set an object that the head should watch
@@ -101,18 +237,37 @@ class ExtrasMixin(object):
         # open chest, furnace, workbench
         pass
 
+    def place_entity(self, bx, by, bz, face, entity, amt=0, dmg=0):
+        # place a block or entity
+        make_packet("build", bx, by, bz, face, items)
+
+    """
+    req: can open from_what
+    req: inventory has free slot * quantity
+    eff: inventory has what
+    """
     def take_from(self, from_what, what, quantity):
         # take something from something else
         pass
 
-    def put_into(self, into_what, what, quantity):
-        # put something from personal inventory into something
+    """
+    req: can open what
+    req: into_what has free slot * count
+    eff: into_what has what
+    """
+    def put_into(self, into_what, what, count):
+        # put something from personal inventory into something else
+
+        # open inventory of entity
+        # send the move packet
+        # wait for confirmation from server
         pass
 
-    def throw(self, what, quantity):
-        # throw an object from personal inventory
-        pass
-
+    """
+    req: inventory has materials in recipe
+    req: can open crafting area
+    eff: inventory has crafted
+    """
     def craft(self, recipe):
         # craft something
         pass
@@ -127,11 +282,12 @@ class ExtrasMixin(object):
 
     def set_home(self, location):
         # set the place where the bot idles
+        # bot could go here to hang out if needed
         pass
 
     def play_animation(self, animation):
         # play an animation
-        pass
+        make_packet("animate", eid=0, animation=animation_name)
 
     def crouch(self):
         # crouch/sneak
@@ -143,7 +299,7 @@ class ExtrasMixin(object):
 
     def chat(self, text):
         # send a chat message (limited to 100 chars)
-        self.wire_out(make_packet("chat", message=text[:100]))
+        self.transport.write(make_packet("chat", message=text[:100]))
 
 
 class WebAuthMixin(object):
@@ -161,7 +317,7 @@ class WebAuthMixin(object):
         """
 
         if online:
-            # logine to minecraft.net (1)
+            # login to minecraft.net (1)
             self.username = self._minecraft_login(username, password)
         else:
             self.username = username
@@ -236,6 +392,12 @@ class MinecraftClientProtocol(Protocol, WebAuthMixin, ExtrasMixin):
         except KeyError:
             print "unhandled", header
 
+    def _get_next_action_no(self, callback, args):
+        d = Deferred()
+        self.action_no += 1
+        self.pending_actions[self.action_no] = d
+        return self.action_no, d
+
     def __init__(self, bot, world, online=True):
         self.buffer = ""
 
@@ -250,7 +412,8 @@ class MinecraftClientProtocol(Protocol, WebAuthMixin, ExtrasMixin):
         self.world = world
 
         # used for handling window actions
-        self.action_no = 1
+        self.action_no = 0
+        self.pending_actions = {}
 
         # after client is ready, sends this back to the server
         self.confirmed_spawn = False
@@ -405,6 +568,8 @@ class MinecraftClientProtocol(Protocol, WebAuthMixin, ExtrasMixin):
     def OnPlayerLocationUpdate(self, packet):
         self.bot.update_location_from_packet(packet)
 
+        print packet
+
         # everytime the player spawns, it must send back the location that it was given
         # this is a check for the server.  not entirely part of authentication, but
         # the bot won't run without it
@@ -469,15 +634,12 @@ class MinecraftClientProtocol(Protocol, WebAuthMixin, ExtrasMixin):
     def OnWindowAction(self, packet):
         print packet
 
-    def get_action_no(self):
-        self.action_no += 1
-        return self.action_no
-
     # also used when bot picks up items
     @wrap_handler("window-slot")
     def OnWindowSlot(self, packet):
         self.bot.inventory.update_from_packet(packet)
-        #self.throw()
+        if packet.primary != -1:
+            self.throw_slot(packet.slot, packet.count, (packet.primary, packet.secondary, packet.count))
 
     @wrap_handler("window-progress")
     def OnWindowProgress(self, packet):
@@ -485,13 +647,18 @@ class MinecraftClientProtocol(Protocol, WebAuthMixin, ExtrasMixin):
 
     @wrap_handler("window-token")
     def OnWindowToken(self, packet):
-        print "action results"
-        print "number: %s, status: %s" % (packet.token, packet.acknowledged)
+        try:
+            d = self.pending_actions[packet.token]
+            d.callback(packet)
+        except KeyError:
+            print "huh....got action back that didnt send?"
+            return
 
     # sent by server to init the player's inventory
     @wrap_handler("inventory")
     def OnInventory(self, packet):
-        self.bot.inventory.load_from_packet(packet)
+        if packet.name == 0:
+            self.bot.inventory.load_from_packet(packet)
 
     @wrap_handler("error")
     def OnKick(self, packet):

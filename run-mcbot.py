@@ -15,7 +15,8 @@ from mcbot.mcprotocol import MinecraftClientProtocol
 
 
 server = "127.0.0.1"
-port   = 25565
+port   = 24565
+#port   = 25565
 
 # for authentication on minecraft.net
 # lets keep it legit here
@@ -58,11 +59,3 @@ if __name__ == "__main__":
 
     cProfile.run('reactor.run()', "mcbot.prof")
 
-    #profile = hotshot.Profile("main")
-    #try:
-    #    profile.runcall(reactor.run)
-    #except:
-    #    pass
-    #profile.close()
-
-    #reactor.run()

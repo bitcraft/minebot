@@ -16,6 +16,83 @@ class World(bravo_world):
         super(World, self).__init__(folder)
         self.entities = {}
 
+    def pathfind(self, start, end, waypoints=[], width=0):
+        """
+        Width is the amount of chunks around the current chunk to process
+        A long width will yield a better path, but takes longer to process,
+        will require more memory, and may be slow.
+
+        If chunks are not available a partial path will be given based on
+        what chunks are available.
+
+        Waypoints can be added to help guide the pathfinder, or to avoid
+        areas.  If waypoints are given and pathfinding fails, then the path
+        will be truncated to the last waypoint.
+
+        points to think about:
+            unlike most games, the world is manipulatable.
+            costs should be taken seriously
+            pathfinder should also be given a budget:
+                based on the bot's current inventory, what is
+                an acceptable cost/time trade off?
+                because we just might rather go through some stone (high cost)
+                rather than try to completely avoid it, if we have the tools.
+            suicide just may be the the answer.
+
+        the z,x axis are easy to find, but acending and decending will have to
+        be specifically coded because we will be fighting gravity.
+
+        * possible mechanic is the "dig down/build up" method of tunneling
+
+        * build stars going down if possible
+        * if going up, build stairs, or spirals
+
+        * if building tunnels, try to find a mountain to build into, rather than
+          just building from current location
+
+        * define zones that digging shouldn't happen (like around base)
+        * try to avoid crossing tunnels
+
+        * set diggable blocks to a high cost.
+
+        * costs should be:
+            time
+            dig cost (per tool class)
+            movement
+       
+        * use minecarts as transportation?
+            goap can handle loading/unloading carts if need be
+            (how to tie that in with pathfinding???)
+ 
+        """
+
+    def get_surrounding(self, x, y, z, width=0):
+        """
+        Get a list of blocks surrounding this block.
+        There will always be 8 tuples returned.
+        This is used for pathfinding with the bot.
+
+        The format is:
+
+        <   X   >
+
+        0   1   2  ^
+
+        3       4  Z
+
+        5   6   7  v
+
+        (...(block_type, height)...)
+        """
+        sx = 0; ex = 3
+        sy = 0; ey = 3
+        sz = 0; ez = 3
+
+        # can't do pathfinding accross chunks, yet
+        if (x + sx < 0) or (x + ex >= 64) or (z + sz < 0) or (z + ez >= 64):
+            return None
+
+
     def populate_chunk(self, chunk):
         """
         Override since we don't [really] need [/want] to do this on the client side.
@@ -78,7 +155,8 @@ class World(bravo_world):
 
     def load_chunk(self, x, z):
         """
-        Actually not needed for the client.
+        As the bot goes through the world, it would be helpful for it to keep records
+        of chunks it has been to.
         """
 
         if (x, z) in self.chunk_cache:
